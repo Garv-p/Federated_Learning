@@ -13,5 +13,5 @@ class Aggregator:
     def evaluate(self):
         #TODO
     
-    
+
     

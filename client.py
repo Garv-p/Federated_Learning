@@ -8,6 +8,10 @@ class Client:
 
     def train(self, epochs, batch_size, lr):
         #TODO
+        self.model.train()
+
+        for epoch in range(epochs):
+            
 
     def predict(self, x):
         #TODO
