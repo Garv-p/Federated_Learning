@@ -3,17 +3,29 @@ import client
 import numpy as np
 import torch
 import torch.optim as optim
-from transformers import BertForMaskedLM
+import transformer
 
 import torch.nn as nn
 import torch.nn.functional as F
 import math
 
 
+
+
+
+#TODO
+# encode the dataset into numbers/formatting. DONE
+# write the tranformer class in pytorch : 
+# write the model training data and the model evaluation data. turn into graphs. 
+# write the aggregator classs. Look into Fedavg and other papers
+# look at the results. Compare with LEAF.
+
+
 class Client:
-    def __init__(self, id, data, model, batch_size, lr):
+    def __init__(self, id, data,val_data, model, batch_size, lr):
         self.id = id
         self.data = data
+        self.val_data = val_data
         self.model = model
         self.lr = lr
         self.criterion = nn.CrossEntropyLoss()
@@ -21,30 +33,40 @@ class Client:
 
     def train(self, epochs, batch_size, lr):
         
-        self.model.train()
-    
-
-        for epoch in range(epochs):    
+        val_batches = [get_batches(self.val_data[i], batch_size, 256) for i in range(len(self.val_data))]
+        batches = [get_batches(self.data[i], batch_size, 256) for i in range(len(self.data))]
+        losses = []
+        vals = []
+        for epoch in range(epochs):           
+            self.model.train() 
             total_loss = 0.
-            for batch in self.data:
+            for x,y in batches:
+                x = torch.tensor(x, dtype=torch.long)
+                y = torch.tensor(y, dtype=torch.long)
                 self.optimizer.zero_grad()
-                data,targets = batch
-                output = self.model.forward(data)
-                loss = self.criterion(output.view(-1, self.model.ntokens), targets)
-                #need to reread what backward and optimizer do here. fit into brain conceptually
+                src_mask = generate_square_subsequent_mask(len(x))
+                output = model.forward(x,src_mask)
+                loss = self.criterion(output.view(-1, ntokens), y.view(-1) )
                 loss.backward()
                 self.optimizer.step()
                 total_loss += loss.item()
-
+            losses.append(total_loss/len(self.data))
             print(f'Epoch {epoch+1}, Loss: {total_loss/len(self.data)}')
+            if True:
+                self.model.eval()
+                torch.no_grad()
+                for x,y in val_batches:
+                    x = torch.tensor(x, dtype=torch.long)
+                    y = torch.tensor(y, dtype=torch.long)
+                    src_mask = generate_square_subsequent_mask(len(x))
+                    output = model.forward(x,src_mask)
+                    loss = self.criterion(output.view(-1, ntokens), y.view(-1) )
+                    total_loss += loss.item()
+                vals.append(total_loss/len(self.data))
+                print(f'Validation Loss: {total_loss/len(self.data)}')
+  
+        return losses, vals
 
-        self.model.eval()
-        torch.no_grad()
-        for batch in self.data:
-            data, targets = batch
-            output = self.model.forward(data)
-            loss = self.criterion(output.view(-1, self.model.ntokens), targets)
-            total_loss += loss.item()
 
 
 
@@ -73,6 +95,11 @@ class Aggregator:
 
     def aggregate(self):
         #TODO
+        #fedavg
+        #n_i is the same across all clients, so I can just average the weights by num clients. could implement n_i for sets of varying sizes;
+        for 
+                
+    def get_model(self):
         return self.global_model
     
 
@@ -80,31 +107,8 @@ class Aggregator:
         #TODO
         return None
 
-class TransformerModel(nn.Module):
-    def __init__(self, ntoken, d_model, nhead, d_hid, nlayers, dropout=0.5):
-        super(TransformerModel, self).__init__()
-        self.model_type = 'Transformer'
-        self.pos_encoder = PositionalEncoding(d_model)
-        encoder_layers = TransformerEncoderLayer(d_model, nhead, d_hid, dropout)
-        self.transformer_encoder = TransformerEncoder(encoder_layers, nlayers)
-        self.encoder = nn.Embedding(ntoken, d_model)
-        self.d_model = d_model
-        self.decoder = nn.Linear(d_model, ntoken)
-        self.init_weights()
 
-    def init_weights(self):
-        initrange = 0.1
-        self.encoder.weight.data.uniform_(-initrange, initrange)
-        self.decoder.bias.data.zero_()
-        self.decoder.weight.data.uniform_(-initrange, initrange)
 
-    def forward(self, src, src_mask):
-        src = self.encoder(src) * math.sqrt(self.d_model)
-        src = self.pos_encoder(src)
-        output = self.transformer_encoder(src, src_mask)
-        output = self.decoder(output)
-        return output
-    
 if __name__ == "__main__":
     
 
@@ -123,38 +127,38 @@ if __name__ == "__main__":
 
     ntokens = len(chars)
     #single point model(no federated learning)
-    model = TransformerModel(ntokens, 200, 2, 200, 2)
+    model = transformer.TransformerModel(ntokens, 200, 2, 200, 2)
     single_model = Client(0, train_data, model, 32, .01)
-    
 
-    """
-    num_clients = 10
+    #divide training data into 5 parts
+    #need to check if this is the correct way to split the data
+    splits = np.array_split(train_data, 5)
+
+    num_clients = 5
     clients = []
     for i in range(num_clients):
-        clients.append(client.Client(i, None, model))
+        clients.append(client.Client(i, splits[i], model))
 
     aggregator = Aggregator(clients, model)
 
-    dataset = None
-    #split dataset into num_clients parts
-    splits = np.array_split(dataset, num_clients)
-    for i in range(num_clients):
-        clients[i].data = splits[i]
+
     
     lr = .01
-    epochs = 10
+    epochs = 20
     batch_size = 32
     num_rounds = 10
+    client_train_loss = {}
     for i in range(num_rounds):
         for i in range(num_clients):
-            clients[i].train(epochs, batch_size, lr)
+            train_loss, val_loss = clients[i].train(epochs, batch_size, lr)
+            client_train_loss[i] = (train_loss)
 
         aggregator.aggregate()
         aggregator.evaluate()
         new_model  = aggregator.get_model()
         for i in range(num_clients):
             clients[i].update_model(new_model)
-            """
+
         
 
  
